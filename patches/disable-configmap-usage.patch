@@ -83,3 +83,24 @@ index de05d6e..035f5b7 100644
 +	// Usage is ignored in every namespace, whether or not a Pod references the ConfigMap.
 +	assert.Empty(t, results)
  }
+diff --git a/pkg/analyzer/configmap_projected_test.go b/pkg/analyzer/configmap_projected_test.go
+--- a/pkg/analyzer/configmap_projected_test.go
++++ b/pkg/analyzer/configmap_projected_test.go
+@@ -91,7 +91,7 @@ func TestConfigMapAnalyzer_ProjectedVolumeUsage(t *testing.T) {
+ 			expectedErrors: 0,
+ 		},
+ 		{
+-			name:          "unused configmap is still reported",
++			name:          "unused configmap is ignored",
+ 			configMapName: "unused-cm",
+ 			pod: v1.Pod{
+ 				ObjectMeta: metav1.ObjectMeta{Name: "other-pod", Namespace: "default"},
+@@ -99,7 +99,7 @@ func TestConfigMapAnalyzer_ProjectedVolumeUsage(t *testing.T) {
+ 					Containers: []v1.Container{{Name: "app"}},
+ 				},
+ 			},
+-			expectedErrors: 1,
++			expectedErrors: 0,
+ 		},
+ 	}
+ 
