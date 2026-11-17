@@ -1,4 +1,4 @@
-name: Build ConfigMap-usage-disabled image
+name: Build ConfigMap-usage-disabled binaries
 
 # A normal GitHub "Sync fork" update produces a push to main.
 on:
@@ -8,11 +8,10 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  packages: write
+  contents: write
 
 concurrency:
-  group: patched-image-${{ github.ref }}
+  group: patched-binaries-${{ github.ref }}
   cancel-in-progress: true
 
 defaults:
@@ -45,63 +44,68 @@ jobs:
       - name: Test patched ConfigMap analyzer
         run: go test ./pkg/analyzer -run '^TestConfigMapAnalyzer' -count=1
 
-      - name: Prepare image metadata
-        id: image
+      - name: Build patched binaries
         run: |
-          image="ghcr.io/${GITHUB_REPOSITORY,,}"
-          version="no-configmap-usage-${GITHUB_SHA:0:12}"
-          echo "name=$image" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "created=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          VERSION="no-configmap-usage-${GITHUB_SHA:0:12}"
+          DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          LDFLAGS="-s -w -X main.version=${VERSION} -X main.commit=${GITHUB_SHA} -X main.date=${DATE}"
+          mkdir -p dist
+          for arch in amd64 arm64 arm ppc64le s390x; do
+            echo "Building linux/${arch}"
+            goarm=""
+            if [ "$arch" = "arm" ]; then goarm=7; fi
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" GOARM="$goarm" \
+              go build -trimpath -ldflags "$LDFLAGS" -o "dist/k8sgpt_linux_${arch}" ./
+          done
+          (cd dist && sha256sum k8sgpt_linux_* > checksums.txt)
+          cat dist/checksums.txt
 
-      - name: Log in to GHCR
-        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
+      - name: Smoke check amd64 binary
+        run: ./dist/k8sgpt_linux_amd64 version
+
+      - name: Upload binaries artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          name: k8sgpt-no-configmap-usage-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
-
-      - name: Build and publish patched image
-        id: build
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
-        with:
-          # A local context is essential: the default Git context ignores the patch.
-          context: .
-          file: ./container/Dockerfile
-          target: production
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ steps.image.outputs.name }}:no-configmap-usage
-            ${{ steps.image.outputs.name }}:no-configmap-usage-${{ github.sha }}
-          build-args: |
-            VERSION=${{ steps.image.outputs.version }}
-            COMMIT=${{ github.sha }}
-            DATE=${{ steps.image.outputs.created }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ steps.image.outputs.version }}
-            org.opencontainers.image.created=${{ steps.image.outputs.created }}
-            org.opencontainers.image.description=K8sGPT with ConfigMap unused-resource findings disabled globally
-          cache-from: type=gha,scope=configmap-usage-disabled
-          cache-to: type=gha,mode=max,scope=configmap-usage-disabled
-
-      - name: Record published image
+      - name: Publish GitHub releases
         env:
-          IMAGE: ${{ steps.image.outputs.name }}
-          DIGEST: ${{ steps.build.outputs.digest }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+          notes="K8sGPT binaries built from ${GITHUB_SHA} with ConfigMap usage findings disabled globally; other checks retain upstream behavior."
+          commit_tag="no-configmap-usage-${GITHUB_SHA}"
+          rolling_tag="no-configmap-usage"
+
+          gh release create "$commit_tag" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$commit_tag" \
+            --notes "$notes" \
+            --latest=false
+
+          gh release delete "$rolling_tag" --cleanup-tag --yes --repo "$GITHUB_REPOSITORY" || true
+          gh release create "$rolling_tag" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$rolling_tag (rolling)" \
+            --notes "Rolling release. $notes" \
+            --latest=false
+
+      - name: Record published binaries
+        run: |
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download"
           {
-            echo '### Patched K8sGPT image'
-            echo "- Rolling tag: \`$IMAGE:no-configmap-usage\`"
-            echo "- Commit tag: \`$IMAGE:no-configmap-usage-$GITHUB_SHA\`"
-            echo "- Digest: \`$IMAGE@$DIGEST\`"
+            echo '### Patched K8sGPT binaries'
             echo '- ConfigMap usage findings are disabled globally; other checks retain upstream behavior.'
+            echo ''
+            echo '| Arch | Rolling | Per-commit |'
+            echo '| --- | --- | --- |'
+            for arch in amd64 arm64 arm ppc64le s390x; do
+              echo "| ${arch} | ${base}/no-configmap-usage/k8sgpt_linux_${arch} | ${base}/no-configmap-usage-${GITHUB_SHA}/k8sgpt_linux_${arch} |"
+            done
+            echo "| checksums | ${base}/no-configmap-usage/checksums.txt | ${base}/no-configmap-usage-${GITHUB_SHA}/checksums.txt |"
           } >> "$GITHUB_STEP_SUMMARY"
