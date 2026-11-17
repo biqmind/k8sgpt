@@ -1,0 +1,107 @@
+name: Build ConfigMap-usage-disabled image
+
+# A normal GitHub "Sync fork" update produces a push to main.
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: patched-image-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    if: github.repository == 'biqmind/k8sgpt' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out synced source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Apply ConfigMap usage patch
+        run: |
+          git apply --check patches/disable-configmap-usage.patch
+          git apply patches/disable-configmap-usage.patch
+          git diff --check
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test patched ConfigMap analyzer
+        run: go test ./pkg/analyzer -run '^TestConfigMapAnalyzer' -count=1
+
+      - name: Prepare image metadata
+        id: image
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          version="no-configmap-usage-${GITHUB_SHA:0:12}"
+          echo "name=$image" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "created=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Build and publish patched image
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          # A local context is essential: the default Git context ignores the patch.
+          context: .
+          file: ./container/Dockerfile
+          target: production
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:no-configmap-usage
+            ${{ steps.image.outputs.name }}:no-configmap-usage-${{ github.sha }}
+          build-args: |
+            VERSION=${{ steps.image.outputs.version }}
+            COMMIT=${{ github.sha }}
+            DATE=${{ steps.image.outputs.created }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.image.outputs.version }}
+            org.opencontainers.image.created=${{ steps.image.outputs.created }}
+            org.opencontainers.image.description=K8sGPT with ConfigMap unused-resource findings disabled globally
+          cache-from: type=gha,scope=configmap-usage-disabled
+          cache-to: type=gha,mode=max,scope=configmap-usage-disabled
+
+      - name: Record published image
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo '### Patched K8sGPT image'
+            echo "- Rolling tag: \`$IMAGE:no-configmap-usage\`"
+            echo "- Commit tag: \`$IMAGE:no-configmap-usage-$GITHUB_SHA\`"
+            echo "- Digest: \`$IMAGE@$DIGEST\`"
+            echo '- ConfigMap usage findings are disabled globally; other checks retain upstream behavior.'
+          } >> "$GITHUB_STEP_SUMMARY"

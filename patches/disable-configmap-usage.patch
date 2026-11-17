@@ -1,0 +1,85 @@
+diff --git a/pkg/analyzer/configmap.go b/pkg/analyzer/configmap.go
+index 0700211..9ce32db 100644
+--- a/pkg/analyzer/configmap.go
++++ b/pkg/analyzer/configmap.go
+@@ -119,14 +119,6 @@ func (ConfigMapAnalyzer) Analyze(a common.Analyzer) ([]common.Result, error) {
+ 			continue
+ 		}
+ 
+-		// Check for unused ConfigMaps
+-		if !usedConfigMaps[cmKey] {
+-			failures = append(failures, common.Failure{
+-				Text:      fmt.Sprintf("ConfigMap %s is not used by any pods in the namespace", cm.Name),
+-				Sensitive: []common.Sensitive{},
+-			})
+-		}
+-
+ 		// Check for empty ConfigMaps
+ 		if len(cm.Data) == 0 && len(cm.BinaryData) == 0 {
+ 			failures = append(failures, common.Failure{
+diff --git a/pkg/analyzer/configmap_test.go b/pkg/analyzer/configmap_test.go
+index de05d6e..035f5b7 100644
+--- a/pkg/analyzer/configmap_test.go
++++ b/pkg/analyzer/configmap_test.go
+@@ -34,7 +34,7 @@ func TestConfigMapAnalyzer(t *testing.T) {
+ 		expectedErrors int
+ 	}{
+ 		{
+-			name:      "unused configmap",
++			name:      "unused configmap is ignored",
+ 			namespace: "default",
+ 			configMaps: []v1.ConfigMap{
+ 				{
+@@ -47,7 +47,7 @@ func TestConfigMapAnalyzer(t *testing.T) {
+ 					},
+ 				},
+ 			},
+-			expectedErrors: 1,
++			expectedErrors: 0,
+ 		},
+ 		{
+ 			name:      "empty configmap",
+@@ -144,6 +144,12 @@ func TestConfigMapAnalyzer(t *testing.T) {
+ 
+ 			assert.NoError(t, err)
+ 			assert.Equal(t, tt.expectedErrors, len(results))
++			for _, result := range results {
++				assert.Len(t, result.Error, 1, "only the empty or oversized finding should remain")
++				for _, failure := range result.Error {
++					assert.NotContains(t, failure.Text, "is not used by any pods")
++				}
++			}
+ 		})
+ 	}
+ }
+@@ -197,7 +203,7 @@ func TestConfigMapAnalyzer_SidecarPatterns(t *testing.T) {
+ 			expectedErrors: 0,
+ 		},
+ 		{
+-			name:      "normal unused configmap should still be flagged",
++			name:      "normal unused configmap should be ignored",
+ 			namespace: "default",
+ 			configMaps:  []v1.ConfigMap{
+ 				{
+@@ -210,7 +216,7 @@ func TestConfigMapAnalyzer_SidecarPatterns(t *testing.T) {
+ 					},
+ 				},
+ 			},
+-			expectedErrors: 1,
++			expectedErrors: 0,
+ 		},
+ 		{
+ 			name:      "prometheus rule configmap should not be flagged",
+@@ -338,10 +344,6 @@ func TestConfigMapAnalyzer_NamespaceScoping(t *testing.T) {
+ 	results, err := analyzer.Analyze(config)
+ 	assert.NoError(t, err)
+ 
+-	// team-b/shared-cm is unused and must be reported; team-a/shared-cm is used and must not be reported.
+-	assert.Equal(t, 1, len(results), "expected 1 failure for the unused ConfigMap in team-b, got %d", len(results))
+-	if len(results) == 1 {
+-		assert.Equal(t, "team-b/shared-cm", results[0].Name)
+-		assert.Contains(t, results[0].Error[0].Text, "is not used by any pods in the namespace")
+-	}
++	// Usage is ignored in every namespace, whether or not a Pod references the ConfigMap.
++	assert.Empty(t, results)
+ }
