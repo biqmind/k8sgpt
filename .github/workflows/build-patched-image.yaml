@@ -51,11 +51,9 @@ jobs:
           DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           LDFLAGS="-s -w -X main.version=${VERSION} -X main.commit=${GITHUB_SHA} -X main.date=${DATE}"
           mkdir -p dist
-          for arch in amd64 arm64 arm ppc64le s390x; do
+          for arch in amd64 arm64; do
             echo "Building linux/${arch}"
-            goarm=""
-            if [ "$arch" = "arm" ]; then goarm=7; fi
-            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" GOARM="$goarm" \
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
               go build -trimpath -ldflags "$LDFLAGS" -o "dist/k8sgpt_linux_${arch}" ./
           done
           (cd dist && sha256sum k8sgpt_linux_* > checksums.txt)
@@ -104,7 +102,7 @@ jobs:
             echo ''
             echo '| Arch | Rolling | Per-commit |'
             echo '| --- | --- | --- |'
-            for arch in amd64 arm64 arm ppc64le s390x; do
+            for arch in amd64 arm64; do
               echo "| ${arch} | ${base}/no-configmap-usage/k8sgpt_linux_${arch} | ${base}/no-configmap-usage-${GITHUB_SHA}/k8sgpt_linux_${arch} |"
             done
             echo "| checksums | ${base}/no-configmap-usage/checksums.txt | ${base}/no-configmap-usage-${GITHUB_SHA}/checksums.txt |"
